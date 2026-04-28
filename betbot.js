@@ -3,7 +3,7 @@ const { chromium } = require('playwright');
 /**
  * betman에 로그인하고 선택한 경기에 배팅
  *
- * @param {Array} selections - [{ gameId: '001', pick: 'win'|'draw'|'lose' }, ...]
+ * @param {Array} selections - [{ matchSeq: '1812', pick: 'win'|'draw'|'lose' }, ...]
  * @param {number} amount - 배팅 금액
  * @param {string} userId - betman 아이디
  * @param {string} userPw - betman 비밀번호
@@ -14,7 +14,7 @@ async function placeBet(selections, amount, userId, userPw) {
   }
 
   let browser = null;
-  const logs = []; // 진행 상황 로그
+  const logs = [];
 
   try {
     browser = await chromium.launch({
@@ -29,50 +29,53 @@ async function placeBet(selections, amount, userId, userPw) {
     const page = await context.newPage();
     logs.push('브라우저 시작');
 
-    // ===== 1단계: 로그인 =====
+    // ===== 1단계: 메인 페이지 로딩 & 로그인 =====
     await page.goto('https://www.betman.co.kr/main/mainPage/main.do', {
       waitUntil: 'networkidle',
       timeout: 30000,
     });
     logs.push('betman 메인 페이지 로딩 완료');
 
-    // 로그인 버튼 클릭 → 로그인 폼으로 이동
-    // NOTE: 실제 셀렉터는 betman 사이트 구조에 맞게 수정 필요
-    const loginBtn = await page.$('a[href*="login"], .login-btn, #loginBtn, [class*="login"]');
-    if (loginBtn) {
-      await loginBtn.click();
-      await page.waitForTimeout(2000);
-    }
-
-    // 아이디/비밀번호 입력
-    // betman은 보통 iframe 안에 로그인 폼이 있을 수 있음
-    const frames = page.frames();
+    // 로그인 폼 찾기 (iframe 포함)
     let loginFrame = page;
-
+    const frames = page.frames();
     for (const frame of frames) {
-      const idInput = await frame.$('input[name="userId"], input[id="userId"], input[name="id"]');
+      const idInput = await frame.$('input[name="userId"], input[id="userId"]');
       if (idInput) {
         loginFrame = frame;
         break;
       }
     }
 
-    await loginFrame.fill('input[name="userId"], input[id="userId"], input[name="id"]', userId);
-    await loginFrame.fill('input[name="userPw"], input[id="userPw"], input[type="password"]', userPw);
-    logs.push('로그인 정보 입력 완료');
+    // 아이디/비밀번호 입력
+    const idInput = await loginFrame.$('input[name="userId"], input[id="userId"]');
+    const pwInput = await loginFrame.$('input[name="userPw"], input[id="userPw"], input[type="password"]');
+
+    if (idInput && pwInput) {
+      await idInput.fill(userId);
+      await pwInput.fill(userPw);
+      logs.push('로그인 정보 입력 완료');
+    } else {
+      // 로그인 버튼/링크를 클릭해서 로그인 폼으로 이동
+      const loginLink = await page.$('a[href*="login"], .login-btn, [class*="login"] a');
+      if (loginLink) {
+        await loginLink.click();
+        await page.waitForTimeout(2000);
+      }
+      await page.fill('input[name="userId"], input[id="userId"]', userId);
+      await page.fill('input[type="password"]', userPw);
+      logs.push('로그인 정보 입력 완료 (대체 방법)');
+    }
 
     // 로그인 제출
-    await loginFrame.click('button[type="submit"], input[type="submit"], .btn-login, #loginSubmit');
-    await page.waitForTimeout(3000);
-    logs.push('로그인 시도 완료');
-
-    // 로그인 성공 확인
-    const loginError = await page.$('.error-msg, .login-error, [class*="error"]');
-    if (loginError) {
-      const errorText = await loginError.textContent();
-      throw new Error(`로그인 실패: ${errorText}`);
+    const submitBtn = await loginFrame.$('button[type="submit"], input[type="submit"], .btn-login');
+    if (submitBtn) {
+      await submitBtn.click();
+    } else {
+      await loginFrame.press('input[type="password"]', 'Enter');
     }
-    logs.push('로그인 성공');
+    await page.waitForTimeout(3000);
+    logs.push('로그인 시도');
 
     // ===== 2단계: 프로토 승부식 구매 페이지로 이동 =====
     await page.goto('https://www.betman.co.kr/main/mainPage/gamebuy/gameSlipIFR.do?gmId=G101&gmTs=01', {
@@ -80,67 +83,80 @@ async function placeBet(selections, amount, userId, userPw) {
       timeout: 30000,
     });
     await page.waitForTimeout(3000);
+
+    // "발매중" 탭 클릭
+    const sellingTab = await page.$('#buyPsb1StTab_2');
+    if (sellingTab) {
+      await sellingTab.click();
+      await page.waitForTimeout(2000);
+    }
     logs.push('프로토 승부식 구매 페이지 이동');
 
     // ===== 3단계: 경기 선택 =====
+    const pickToSelKey = { win: '1', draw: '2', lose: '3' };
+
     for (const sel of selections) {
-      const { gameId, pick } = sel;
+      const { matchSeq, pick } = sel;
+      const selKey = pickToSelKey[pick];
 
-      // pick에 따라 승/무/패 버튼 클릭
-      // NOTE: 실제 셀렉터를 betman 사이트에 맞게 수정해야 합니다
-      // 일반적으로 각 경기 행에서 승/무/패 라디오 버튼이나 셀을 클릭
-      const pickMap = { win: 0, draw: 1, lose: 2 };
-      const pickIndex = pickMap[pick];
-
-      if (pickIndex === undefined) {
-        logs.push(`경기 ${gameId}: 잘못된 선택값 "${pick}" (win/draw/lose만 가능)`);
+      if (!selKey) {
+        logs.push(`경기 ${matchSeq}: 잘못된 선택값 "${pick}"`);
         continue;
       }
 
       try {
-        // 경기 행 찾기 (gameId 기반)
-        const gameRow = await page.$(`tr[data-game-id="${gameId}"], tr:nth-child(${parseInt(gameId)})`);
-        if (gameRow) {
-          const pickButtons = await gameRow.$$('input[type="radio"], .pick-btn, td.pick');
-          if (pickButtons[pickIndex]) {
-            await pickButtons[pickIndex].click();
-            logs.push(`경기 ${gameId}: ${pick} 선택 완료`);
+        // matchSeq로 해당 경기 li 찾기
+        const gameItem = await page.$(`li[data-matchseq="${matchSeq}"]`);
+
+        if (gameItem) {
+          // 해당 경기의 승/무/패 버튼 찾기 (data-selkey 기반)
+          const btn = await gameItem.$(`button.btnChk[data-selkey="${selKey}"]`);
+
+          if (btn) {
+            await btn.click();
+            await page.waitForTimeout(500);
+            const pickName = { win: '승', draw: '무', lose: '패' }[pick];
+            logs.push(`경기 ${matchSeq}: ${pickName} 선택 완료`);
+          } else {
+            logs.push(`경기 ${matchSeq}: 해당 선택 버튼을 찾을 수 없음`);
           }
         } else {
-          logs.push(`경기 ${gameId}: 해당 경기를 찾을 수 없음`);
+          logs.push(`경기 ${matchSeq}: 해당 경기를 찾을 수 없음`);
         }
       } catch (e) {
-        logs.push(`경기 ${gameId}: 선택 실패 - ${e.message}`);
+        logs.push(`경기 ${matchSeq}: 선택 실패 - ${e.message}`);
       }
     }
 
     // ===== 4단계: 금액 입력 및 구매 =====
-    const amountInput = await page.$('input[name="amount"], input[id="betAmount"], input[name="buyAmt"]');
+    // betman의 금액 입력 필드 찾기
+    const amountInput = await page.$('input[name="buyAmt"], input[id="buyAmt"], input.buy-amount');
     if (amountInput) {
       await amountInput.fill(String(amount));
       logs.push(`배팅 금액 ${amount}원 입력`);
+    } else {
+      logs.push('금액 입력 필드를 찾을 수 없음 - 수동으로 금액 입력 필요');
     }
 
-    // 구매 버튼 클릭
-    const buyBtn = await page.$('button.buy-btn, #buyBtn, [class*="purchase"], [class*="buy"]');
+    // 구매하기 버튼 클릭
+    const buyBtn = await page.$('button.btn.btnM.blue, button:has-text("구매하기"), .btn-buy');
     if (buyBtn) {
       await buyBtn.click();
       await page.waitForTimeout(2000);
       logs.push('구매 버튼 클릭');
 
-      // 확인 팝업이 있으면 확인 클릭
-      const confirmBtn = await page.$('.confirm-btn, button.ok, [class*="confirm"]');
+      // 확인 팝업
+      const confirmBtn = await page.$('.popup-confirm button, .layerPop button.btn.blue, button:has-text("확인")');
       if (confirmBtn) {
         await confirmBtn.click();
         logs.push('구매 확인 완료');
       }
+    } else {
+      logs.push('구매 버튼을 찾을 수 없음');
     }
 
     await page.waitForTimeout(3000);
     logs.push('배팅 프로세스 완료');
-
-    // 최종 스크린샷 (디버깅용)
-    await page.screenshot({ path: '/tmp/bet-result.png' });
 
     return {
       status: 'completed',

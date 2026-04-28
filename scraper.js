@@ -5,13 +5,14 @@ const { chromium } = require('playwright');
  *
  * 반환 형식:
  * [{
- *   gameId: '001',
- *   round: '132회차',
- *   league: 'EPL',
- *   home: '맨시티',
- *   away: '리버풀',
- *   date: '2026-04-30 20:00',
- *   odds: { win: 1.85, draw: 3.40, lose: 4.20 }
+ *   matchSeq: '1812',
+ *   league: 'NPB',
+ *   home: '요미우리자이언츠',
+ *   away: '히로시마도요카프',
+ *   date: '04.28 (화) 18:00',
+ *   gameType: '야구 승패',
+ *   gameCombKey: 'BS1777366800000요미우리자이언츠히로시마도요카프',
+ *   odds: { win: 1.59, draw: 0, lose: 1.92 }
  * }, ...]
  */
 async function scrapeGames() {
@@ -36,62 +37,103 @@ async function scrapeGames() {
     });
 
     // 페이지 로딩 대기
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
+
+    // "발매중" 탭 클릭 (data-val="2")
+    const sellingTab = await page.$('#buyPsb1StTab_2');
+    if (sellingTab) {
+      await sellingTab.click();
+      await page.waitForTimeout(2000);
+    }
 
     // 경기 데이터 추출
-    // NOTE: betman 사이트의 실제 HTML 구조에 맞게 셀렉터를 조정해야 합니다
     const games = await page.evaluate(() => {
       const gameList = [];
 
-      // 프로토 승부식 경기 테이블에서 데이터 추출
-      // 실제 셀렉터는 betman 사이트 구조에 따라 달라질 수 있음
-      const rows = document.querySelectorAll('table.gameTable tbody tr, .game-list .game-item, [class*="game"] tr');
+      // 각 경기의 상세 항목 (accordion-content 안의 li)
+      const items = document.querySelectorAll('#tbd_gmBuySlipList .accordion-content li[data-matchseq]');
 
-      rows.forEach((row, index) => {
+      items.forEach((item) => {
         try {
-          // 방법 1: 테이블 구조인 경우
-          const cells = row.querySelectorAll('td');
-          if (cells.length >= 5) {
-            const gameId = String(index + 1).padStart(3, '0');
-            const homeTeam = cells[1]?.textContent?.trim() || '';
-            const awayTeam = cells[3]?.textContent?.trim() || '';
-            const league = cells[0]?.textContent?.trim() || '';
+          const matchSeq = item.getAttribute('data-matchseq') || '';
 
-            if (homeTeam && awayTeam) {
-              gameList.push({
-                gameId,
-                league,
-                home: homeTeam,
-                away: awayTeam,
-                date: cells[4]?.textContent?.trim() || '',
-                odds: {
-                  win: parseFloat(cells[5]?.textContent?.trim()) || 0,
-                  draw: parseFloat(cells[6]?.textContent?.trim()) || 0,
-                  lose: parseFloat(cells[7]?.textContent?.trim()) || 0,
-                },
-              });
+          // 경기 시간/마감
+          const dateEl = item.querySelector('.box-data span.db');
+          const date = dateEl ? dateEl.textContent.trim().replace(' 마감', '') : '';
+
+          // 게임 유형 (야구 승패, 축구 승무패 등)
+          const gameTypeEl = item.querySelector('b.game');
+          const gameType = gameTypeEl ? gameTypeEl.textContent.trim() : '';
+
+          // 상위 row에서 팀명, 리그 정보 가져오기
+          const accordion = item.closest('.accordion-content');
+          const parentGroup = accordion ? accordion.previousElementSibling : null;
+
+          let home = '', away = '', league = '';
+
+          if (parentGroup) {
+            const teams = parentGroup.querySelectorAll('.team');
+            if (teams.length >= 2) {
+              home = teams[0].textContent.trim();
+              away = teams[1].textContent.trim();
             }
+            const leagueEl = parentGroup.querySelector('.competition');
+            league = leagueEl ? leagueEl.textContent.trim() : '';
+          }
+
+          // 배당률 버튼에서 정보 추출
+          const btnBox = item.querySelector('.btnChkBox');
+          const gameCombKey = btnBox ? btnBox.getAttribute('data-gamecombkey') || '' : '';
+          const buttons = item.querySelectorAll('.btnChk');
+
+          const odds = { win: 0, draw: 0, lose: 0 };
+          const hasButtons = buttons.length;
+
+          buttons.forEach((btn) => {
+            const selKey = btn.getAttribute('data-selkey');
+            const spans = btn.querySelectorAll('span');
+            // 배당률은 보통 마지막에서 두번째 span에 있음
+            let oddsValue = 0;
+            spans.forEach((s) => {
+              const val = parseFloat(s.textContent.trim());
+              if (val > 0 && val < 100) oddsValue = val;
+            });
+
+            if (selKey === '1') odds.win = oddsValue;
+            else if (selKey === '2') odds.draw = oddsValue;
+            else if (selKey === '3') odds.lose = oddsValue;
+          });
+
+          if (matchSeq && home && away) {
+            gameList.push({
+              matchSeq,
+              league,
+              home,
+              away,
+              date,
+              gameType,
+              gameCombKey,
+              buttonCount: hasButtons, // 2=승패, 3=승무패
+              odds,
+            });
           }
         } catch (e) {
-          // 파싱 실패한 행은 무시
+          // 파싱 실패한 항목은 무시
         }
       });
 
       return gameList;
     });
 
-    // 스크래핑 결과가 비어있으면 대체 방법 시도
+    console.log(`스크래핑 완료: ${games.length}경기 발견`);
+
+    // 디버깅: 경기가 없으면 페이지 상태 로그
     if (games.length === 0) {
-      console.log('기본 셀렉터로 데이터를 찾지 못함. 페이지 HTML 구조 확인 필요.');
-
-      // 디버깅용: 페이지의 주요 구조 출력
-      const pageContent = await page.content();
-      const bodyText = await page.evaluate(() => document.body?.innerText?.substring(0, 500));
-      console.log('페이지 내용 미리보기:', bodyText);
-
-      // 대체 방법: betman API 직접 호출 시도
-      const apiGames = await tryApiApproach(page);
-      if (apiGames.length > 0) return apiGames;
+      const bodyText = await page.evaluate(() => {
+        const el = document.querySelector('#tbd_gmBuySlipList');
+        return el ? el.innerHTML.substring(0, 1000) : 'tbd_gmBuySlipList 없음';
+      });
+      console.log('경기 목록 HTML:', bodyText);
     }
 
     return games;
@@ -102,36 +144,6 @@ async function scrapeGames() {
   } finally {
     if (browser) await browser.close();
   }
-}
-
-/**
- * betman이 내부적으로 사용하는 API를 직접 호출하는 대체 방법
- */
-async function tryApiApproach(page) {
-  try {
-    // betman의 내부 API 엔드포인트 호출 시도
-    const response = await page.evaluate(async () => {
-      try {
-        const res = await fetch('/main/mainPage/gamebuy/closedGameSlip.do', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: 'gmId=G101&gmTs=01',
-        });
-        return await res.text();
-      } catch {
-        return null;
-      }
-    });
-
-    if (response) {
-      console.log('API 응답 수신됨, 파싱 시도...');
-      // API 응답 파싱 로직 (실제 응답 형식에 맞게 수정 필요)
-    }
-  } catch (e) {
-    console.log('API 접근도 실패:', e.message);
-  }
-
-  return [];
 }
 
 module.exports = { scrapeGames };
