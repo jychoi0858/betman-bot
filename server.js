@@ -33,10 +33,11 @@ app.get('/api/games', async (req, res) => {
 // 2) 배팅 실행
 app.post('/api/bet', async (req, res) => {
   try {
-    const { selections, amount } = req.body;
-    // selections: [{ gameId: '...', pick: 'win' | 'draw' | 'lose' }, ...]
-    // amount: 배팅 금액
+    const { selections, amount, userId, userPw } = req.body;
 
+    if (!userId || !userPw) {
+      return res.status(400).json({ success: false, error: '아이디와 비밀번호를 입력해주세요' });
+    }
     if (!selections || !selections.length) {
       return res.status(400).json({ success: false, error: '선택된 경기가 없습니다' });
     }
@@ -44,7 +45,7 @@ app.post('/api/bet', async (req, res) => {
       return res.status(400).json({ success: false, error: '최소 배팅 금액은 100원입니다' });
     }
 
-    const result = await placeBet(selections, amount);
+    const result = await placeBet(selections, amount, userId, userPw);
     res.json({ success: true, result });
   } catch (error) {
     console.error('배팅 에러:', error.message);

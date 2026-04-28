@@ -1,17 +1,16 @@
 const { chromium } = require('playwright');
 
-const BETMAN_ID = process.env.BETMAN_ID;
-const BETMAN_PW = process.env.BETMAN_PW;
-
 /**
  * betman에 로그인하고 선택한 경기에 배팅
  *
  * @param {Array} selections - [{ gameId: '001', pick: 'win'|'draw'|'lose' }, ...]
  * @param {number} amount - 배팅 금액
+ * @param {string} userId - betman 아이디
+ * @param {string} userPw - betman 비밀번호
  */
-async function placeBet(selections, amount) {
-  if (!BETMAN_ID || !BETMAN_PW) {
-    throw new Error('BETMAN_ID, BETMAN_PW 환경변수를 설정하세요');
+async function placeBet(selections, amount, userId, userPw) {
+  if (!userId || !userPw) {
+    throw new Error('아이디와 비밀번호를 입력해주세요');
   }
 
   let browser = null;
@@ -58,8 +57,8 @@ async function placeBet(selections, amount) {
       }
     }
 
-    await loginFrame.fill('input[name="userId"], input[id="userId"], input[name="id"]', BETMAN_ID);
-    await loginFrame.fill('input[name="userPw"], input[id="userPw"], input[type="password"]', BETMAN_PW);
+    await loginFrame.fill('input[name="userId"], input[id="userId"], input[name="id"]', userId);
+    await loginFrame.fill('input[name="userPw"], input[id="userPw"], input[type="password"]', userPw);
     logs.push('로그인 정보 입력 완료');
 
     // 로그인 제출
