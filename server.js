@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const path = require('path');
 const cors = require('cors');
 const { scrapeGames } = require('./scraper');
 const { placeBet } = require('./betbot');
@@ -7,15 +8,19 @@ const { placeBet } = require('./betbot');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// CORS 설정 - GitHub Pages에서 요청 허용
-app.use(cors({
-  origin: '*', // 배포 후 GitHub Pages URL로 제한 권장
-  methods: ['GET', 'POST'],
-}));
+app.use(cors({ origin: '*', methods: ['GET', 'POST'] }));
 app.use(express.json());
 
-// 헬스체크
+// 프론트엔드 정적 파일 제공
+app.use(express.static(path.join(__dirname, 'public')));
+
+// 메인 페이지 → 프론트엔드
 app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// 헬스체크
+app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Betman Bot Backend Running' });
 });
 
@@ -27,45 +32,6 @@ app.get('/api/games', async (req, res) => {
   } catch (error) {
     console.error('스크래핑 에러:', error.message);
     res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// 디버그: betman 페이지 HTML 확인
-app.get('/api/debug', async (req, res) => {
-  const { chromium } = require('playwright');
-  let browser = null;
-  try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
-    const page = await browser.newPage({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    });
-    await page.goto('https://www.betman.co.kr/main/mainPage/gamebuy/gameSlipIFR.do?gmId=G101&gmTs=01', {
-      waitUntil: 'networkidle',
-      timeout: 30000,
-    });
-    await page.waitForTimeout(5000);
-
-    const debug = await page.evaluate(() => {
-      return {
-        title: document.title,
-        url: location.href,
-        bodyLength: document.body.innerHTML.length,
-        gameListHTML: document.querySelector('#tbd_gmBuySlipList')?.innerHTML?.substring(0, 2000) || 'NOT FOUND',
-        accordionCount: document.querySelectorAll('.accordion-content').length,
-        matchItems: document.querySelectorAll('li[data-matchseq]').length,
-        allButtons: document.querySelectorAll('.btnChk').length,
-        tabMenuDiv: document.querySelector('#tabMenuDiv')?.innerHTML?.substring(0, 500) || 'NOT FOUND',
-      };
-    });
-
-    res.json({ success: true, debug });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  } finally {
-    if (browser) await browser.close();
   }
 });
 
